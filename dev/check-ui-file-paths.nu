@@ -143,6 +143,58 @@ def blueprint-inputs [meson_file: string] {
     | get capture0
 }
 
+# Extract dynamic class names declared in a `.blp` file.
+# In Blueprint, dynamic object classes are written as `$ClassName`:
+#   template $ScannerPage: Adw.Bin { ... }
+#   child: $ScannerPage scanner_page { ... };
+# This returns the unique class names declared by `template $...` and by
+# references `$ClassName id { ... }`.
+def dynamic-classes [blp_file: string] {
+    let body = (open --raw $blp_file)
+    let template_pattern = r#'template\s+\$([A-Za-z][A-Za-z0-9_]*)'#
+    let ref_pattern = r#'(?<!template\s)\$([A-Za-z][A-Za-z0-9_]*)'#
+    let template_hits = ($body | parse --regex $template_pattern | get capture0)
+    let ref_hits = ($body | parse --regex $ref_pattern | get capture0)
+    ($template_hits | append $ref_hits | uniq)
+}
+
+# Find all Python classes that have a `@Gtk.Template.from_resource(...)` decorator
+# and return a record with the class name, Python file path, and resource path.
+def py-template-classes [] {
+    let pattern = r#'@Gtk\.Template\.from_resource\(\s*["'']([^"'']+)["'']\s*\)\s*\n\s*class\s+([A-Za-z][A-Za-z0-9_]*)'#
+    python-sources
+    | each { |py_file|
+        let body = (open --raw $py_file)
+        let hits = ($body | parse --regex $pattern)
+        if ($hits | is-empty) {
+            []
+        } else {
+            $hits | each { |m|
+                {
+                    py_file: $py_file,
+                    class_name: ($m.capture1 | into string),
+                    resource: ($m.capture0 | into string),
+                }
+            }
+        }
+    }
+    | flatten
+}
+
+# Convert a class name to the expected project-relative compiled *.ui path.
+# Blueprint output mirrors the `src/ui/` tree under `gtk/`, and the file name
+# is derived from the blp file name (kebab-case), not the class name.
+def expected-ui-for-blp [blp_rel: string] {
+    let parsed = ($blp_rel | path parse)
+    let stem = $parsed.stem
+    let parent = ($parsed.parent | str replace "src/ui/" "")
+    if $parent == "" {
+        $"gtk/($stem).ui"
+    } else {
+        $"gtk/($parent)/($stem).ui"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
@@ -216,6 +268,9 @@ def main [] {
     let on_disk_blps = (glob ($root | path join "src/ui/**/*.blp")
         | each { |p| $p | path relative-to $root })
 
+    let py_classes = (py-template-classes)
+    let class_to_resource = ($py_classes | group-by class_name | items { |k, v| { $k: ($v.resource | first) } } | into record)
+
     mut issues = 0
 
     section "1. Gtk.Template.from_resource references in Python"
@@ -270,6 +325,31 @@ def main [] {
         let parts = ($what_parts | append [(plain " <- ") (path-style $blp_rel)])
         report $exists $parts
         if not $exists { $issues = $issues + 1 }
+    }
+
+    section "4. Every dynamic class in blp files must be backed by a Python class with matching template resource"
+    for blp in $on_disk_blps {
+        let blp_abs = ($root | path join $blp)
+        let classes = (dynamic-classes $blp_abs)
+        let expected_ui = (expected-ui-for-blp $blp)
+        for class_name in $classes {
+            let known = ($class_name in $class_to_resource)
+            if $known {
+                let res = ($class_to_resource | get $class_name)
+                let py_rel = ($py_classes | where class_name == $class_name | get py_file.0 | path relative-to $root)
+                let expected_res = $"($APP_RES_PREFIX_SLASH)($expected_ui)"
+                let ok = ($res == $expected_res)
+                report $ok [
+                    (path-style $blp) (plain " declares dynamic class ") (path-style $class_name) (plain " backed by ") (path-style $py_rel) (plain " -> ") (path-style $res)
+                ]
+                if not $ok { $issues = $issues + 1 }
+            } else {
+                report false [
+                    (path-style $blp) (plain " declares dynamic class ") (path-style $class_name) (plain ": no matching Python @Gtk.Template class")
+                ]
+                $issues = $issues + 1
+            }
+        }
     }
 
     print --stderr ""
