@@ -1,0 +1,726 @@
+diff -ruN pa/badge-loader/cobang-inbox.mjs pb/badge-loader/cobang-inbox.mjs
+--- pa/badge-loader/cobang-inbox.mjs	1970-01-01 00:00:00.000000000 +0000
++++ pb/badge-loader/cobang-inbox.mjs	2026-11-06 12:39:31.479797413 +0000
+@@ -0,0 +1,147 @@
++// cobang-inbox.mjs
++// Receives encrypted QR scan results from CoBang over a Unix socket and decrypts
++// them with an Ed25519 OpenSSH private key. Node built-ins only, no npm deps.
++//
++// Scheme: sender does ephemeral X25519 ECDH against the recipient's key (the
++// Ed25519 SSH key converted to X25519), HKDF-SHA256, then AES-256-GCM.
++//
++// Use as a module:  import { startInbox } from './cobang-inbox.mjs'
++// Or standalone:    node cobang-inbox.mjs ~/.ssh/cobang_inbox
++
++import net from 'node:net';
++import fs from 'node:fs';
++import crypto from 'node:crypto';
++import path from 'node:path';
++import { pathToFileURL } from 'node:url';
++
++const P = (1n << 255n) - 19n;
++const b64u = (buf) => Buffer.from(buf).toString('base64url');
++
++function modPow(b, e, m) {
++  let r = 1n;
++  b %= m;
++  while (e > 0n) {
++    if (e & 1n) r = (r * b) % m;
++    b = (b * b) % m;
++    e >>= 1n;
++  }
++  return r;
++}
++
++function reader(buf, off = 0) {
++  return {
++    u32() { const v = buf.readUInt32BE(off); off += 4; return v; },
++    str() { const n = this.u32(); const s = buf.subarray(off, off + n); off += n; return s; },
++  };
++}
++
++// Parse an unencrypted OpenSSH ed25519 private key -> { seed, pub }
++function readSshEd25519(file) {
++  const text = fs.readFileSync(file, 'utf8');
++  const m = text.match(/-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+?)-----END OPENSSH PRIVATE KEY-----/);
++  if (!m) throw new Error('Not an OpenSSH private key file');
++  const buf = Buffer.from(m[1].replace(/\s+/g, ''), 'base64');
++  const magic = 'openssh-key-v1\0';
++  if (buf.subarray(0, magic.length).toString('latin1') !== magic) throw new Error('Bad key magic');
++  const r = reader(buf, magic.length);
++  const cipher = r.str().toString();
++  r.str(); r.str(); // kdfname, kdfoptions
++  if (cipher !== 'none') throw new Error('Key is passphrase-protected; use a dedicated unencrypted key');
++  if (r.u32() !== 1) throw new Error('Expected exactly one key in file');
++  r.str(); // public blob
++  const inner = reader(r.str());
++  inner.u32(); inner.u32(); // check ints
++  if (inner.str().toString() !== 'ssh-ed25519') throw new Error('Only ssh-ed25519 keys are supported');
++  const pub = inner.str();
++  const priv = inner.str(); // seed(32) || pub(32)
++  return { seed: priv.subarray(0, 32), pub };
++}
++
++// Ed25519 public key (32 bytes) -> X25519 public key (32 bytes)
++export function edPubToX25519(pub) {
++  const yBytes = Buffer.from(pub); yBytes[31] &= 0x7f;
++  const y = BigInt('0x' + Buffer.from(yBytes).reverse().toString('hex'));
++  const u = ((1n + y) * modPow((1n - y + P) % P, P - 2n, P)) % P;
++  return Buffer.from(u.toString(16).padStart(64, '0'), 'hex').reverse();
++}
++
++// Ed25519 -> X25519 (same conversion age uses for ssh-ed25519 recipients)
++function loadRecipientKey(file) {
++  const { seed, pub } = readSshEd25519(file);
++  const d = Buffer.from(crypto.createHash('sha512').update(seed).digest().subarray(0, 32));
++  d[0] &= 248; d[31] &= 127; d[31] |= 64;
++
++  const x = edPubToX25519(pub);
++
++  const key = crypto.createPrivateKey({
++    key: { kty: 'OKP', crv: 'X25519', d: b64u(d), x: b64u(x) },
++    format: 'jwk',
++  });
++  return { key, pub: x };
++}
++
++function decrypt(rk, blob) {
++  if (blob.length < 1 + 32 + 12 + 16 || blob[0] !== 1) throw new Error('Malformed message');
++  const header = blob.subarray(0, 33);
++  const ephPub = blob.subarray(1, 33);
++  const nonce = blob.subarray(33, 45);
++  const ct = blob.subarray(45, blob.length - 16);
++  const tag = blob.subarray(blob.length - 16);
++
++  const shared = crypto.diffieHellman({
++    privateKey: rk.key,
++    publicKey: crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: b64u(ephPub) }, format: 'jwk' }),
++  });
++  const aesKey = Buffer.from(
++    crypto.hkdfSync('sha256', shared, Buffer.concat([ephPub, rk.pub]), 'cobang-inbox-v1', 32),
++  );
++  const dec = crypto.createDecipheriv('aes-256-gcm', aesKey, nonce);
++  dec.setAAD(header);
++  dec.setAuthTag(tag);
++  return Buffer.concat([dec.update(ct), dec.final()]).toString('utf8');
++}
++
++export function defaultSocketPath() {
++  return path.join(process.env.XDG_RUNTIME_DIR ?? '/tmp', 'cobang-inbox.sock');
++}
++
++export function startInbox({ keyPath, socketPath = defaultSocketPath(), onMessage, maxBytes = 64 * 1024 }) {
++  const rk = loadRecipientKey(keyPath);
++  try { fs.unlinkSync(socketPath); } catch {}
++
++  const server = net.createServer({ allowHalfOpen: true }, (sock) => {
++    const chunks = [];
++    let size = 0;
++    sock.on('data', (c) => {
++      size += c.length;
++      if (size > maxBytes) return sock.destroy();
++      chunks.push(c);
++    });
++    sock.on('end', () => {
++      try {
++        onMessage(decrypt(rk, Buffer.concat(chunks)));
++        sock.end('ok');
++      } catch {
++        sock.end('err'); // don't leak why decryption failed
++      }
++    });
++    sock.on('error', () => {});
++  });
++
++  const oldUmask = process.umask(0o177); // socket created as 0600
++  server.listen(socketPath, () => {
++    process.umask(oldUmask);
++    fs.chmodSync(socketPath, 0o600);
++  });
++  return server;
++}
++
++if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
++  const keyPath = process.argv[2];
++  if (!keyPath) {
++    console.error('usage: node cobang-inbox.mjs <path-to-ed25519-ssh-private-key>');
++    process.exit(1);
++  }
++  startInbox({ keyPath, onMessage: (text) => console.log('scanned:', text) });
++  console.log('listening on', defaultSocketPath());
++}
+diff -ruN pa/badge-loader/index.html pb/badge-loader/index.html
+--- pa/badge-loader/index.html	2026-11-06 12:39:31.477198770 +0000
++++ pb/badge-loader/index.html	2026-11-06 12:39:31.480932166 +0000
+@@ -94,6 +94,7 @@
+             <a class="primary-link" href="id-editor.html">Open card editor <span aria-hidden="true">&#8594;</span></a>
+           </div>
+           <p class="badge-status" id="badge-status" role="status" aria-live="polite">Loading badge template…</p>
++          <p class="badge-status" id="scan-status" role="status" aria-live="polite"></p>
+         </div>
+       </div>
+       <section class="registration-panel" aria-label="Registration data">
+@@ -115,5 +116,6 @@
+     <script src="index-card.js"></script>
+     <script src="renderer.js"></script>
+     <script src="directory-ui.js"></script>
++    <script src="scan-ui.js"></script>
+   </body>
+ </html>
+diff -ruN pa/badge-loader/package.json pb/badge-loader/package.json
+--- pa/badge-loader/package.json	2026-11-06 12:39:31.478391887 +0000
++++ pb/badge-loader/package.json	2026-11-06 12:39:31.482070905 +0000
+@@ -13,7 +13,8 @@
+   },
+   "scripts": {
+     "start:electron": "electron .",
+-    "start": "npm run start:electron"
++    "start": "npm run start:electron",
++    "test:unit": "node --test"
+   },
+   "devDependencies": {
+     "@electron-forge/cli": "^8.0.1",
+diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
+--- pa/badge-loader/playwright.js	2026-11-06 12:39:31.478490532 +0000
++++ pb/badge-loader/playwright.js	2026-11-06 12:39:31.482134590 +0000
+@@ -167,30 +167,9 @@
+ }
+ 
+ /**
+- * Search the cashier directory.
++ * Read the user rows from a cashier search-results page.
+  */
+-async function searchUsers(searchTerm) {
+-  const ctx = await getContext();
+-  const page = await ctx.newPage();
+-  try {
+-    const url = new URL(buildUrl('/housekeeping/cashier'));
+-    url.searchParams.set('term', searchTerm);
+-
+-    await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 20_000 });
+-
+-    // If we got bounced to login the session expired
+-    if (page.url().includes('/login')) {
+-      throw new Error('Session expired — please log in again.');
+-    }
+-
+-    // Wait for either search result items OR an explicit empty-state element.
+-    // Avoid .card-body which matches multiple elements on the page.
+-    await Promise.race([
+-      page.locator('.search-item').first().waitFor({ state: 'visible', timeout: 15_000 }),
+-      page.locator('.search-results-empty, .no-results, [data-empty]').first()
+-        .waitFor({ state: 'visible', timeout: 15_000 }),
+-    ]).catch(() => { /* no results or slow — fall through and return [] */ });
+-
++async function extractSearchResults(page) {
+     return await page.locator('.search-item > a').evaluateAll(links =>
+       links.map(link => {
+         const flexCol = link.querySelector('.d-flex.flex-column');
+@@ -230,6 +209,89 @@
+         };
+       }).filter(Boolean)
+     );
++}
++
++/**
++ * Search the cashier directory.
++ */
++async function searchUsers(searchTerm) {
++  const ctx = await getContext();
++  const page = await ctx.newPage();
++  try {
++    const url = new URL(buildUrl('/housekeeping/cashier'));
++    url.searchParams.set('term', searchTerm);
++
++    await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 20_000 });
++
++    // If we got bounced to login the session expired
++    if (page.url().includes('/login')) {
++      throw new Error('Session expired — please log in again.');
++    }
++
++    // Wait for either search result items OR an explicit empty-state element.
++    // Avoid .card-body which matches multiple elements on the page.
++    await Promise.race([
++      page.locator('.search-item').first().waitFor({ state: 'visible', timeout: 15_000 }),
++      page.locator('.search-results-empty, .no-results, [data-empty]').first()
++        .waitFor({ state: 'visible', timeout: 15_000 }),
++    ]).catch(() => { /* no results or slow — fall through and return [] */ });
++
++    return await extractSearchResults(page);
++  } finally {
++    await page.close();
++  }
++}
++
++/**
++ * Replay a badge scan the way a USB keyboard scanner delivers it: the characters typed
++ * quickly, then Enter. The cashier page's own listener (prefix "@CONCAT") handles the rest,
++ * navigating to the search page, which jumps straight to the profile on a single match.
++ *
++ * Resolves one of:
++ *   { kind: 'profile', href }    the site opened a profile
++ *   { kind: 'results', results } the site showed a results list (same shape as searchUsers)
++ *   { kind: 'none' }             no match
++ */
++const PROFILE_PATH = /^\/housekeeping\/cashier\/[^/]+\/?$/;
++const isProfileUrl = (u) => PROFILE_PATH.test(u.pathname);
++
++async function scanBadge(payload) {
++  const ctx = await getContext();
++  const page = await ctx.newPage();
++  try {
++    await page.goto(buildUrl('/housekeeping/cashier'), { waitUntil: 'domcontentloaded', timeout: 20_000 });
++    if (page.url().includes('/login')) {
++      throw new Error('Session expired — please log in again.');
++    }
++    // The page is an SPA: wait until it has rendered before sending keystrokes.
++    await page.getByRole('searchbox', { name: 'Search users...' }).waitFor({ state: 'visible', timeout: 20_000 });
++
++    let reacted = false;
++    for (let attempt = 0; attempt < 2 && !reacted; attempt++) {
++      // Make sure no input has focus, so the keystrokes reach the page-level listener.
++      await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
++      await page.keyboard.type(payload);
++      await page.keyboard.press('Enter');
++      reacted = await page
++        .waitForURL((u) => isProfileUrl(u) || u.searchParams.has('term'), { timeout: 5_000 })
++        .then(() => true, () => false);
++    }
++    if (!reacted) throw new Error('The site did not react to the scan.');
++
++    if (isProfileUrl(new URL(page.url()))) {
++      return { kind: 'profile', href: new URL(page.url()).pathname };
++    }
++    // On the search page: a single match redirects to the profile; otherwise a list or an empty state shows.
++    const outcome = await Promise.race([
++      page.waitForURL(isProfileUrl, { timeout: 10_000 }).then(() => 'profile'),
++      page.locator('.search-item').first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'results'),
++      page.locator('.search-results-empty, .no-results, [data-empty]').first()
++        .waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'none'),
++    ]).catch(() => 'none');
++    if (outcome === 'profile') return { kind: 'profile', href: new URL(page.url()).pathname };
++    if (outcome === 'none') return { kind: 'none' };
++    const results = await extractSearchResults(page);
++    return results.length ? { kind: 'results', results } : { kind: 'none' };
+   } finally {
+     await page.close();
+   }
+@@ -268,4 +330,4 @@
+   if (_browser) { await _browser.close().catch(() => {}); _browser = null; }
+ }
+ 
+-module.exports = { isLoggedIn, login, searchUsers, getSelectedUserDetails, setBaseUrl, getBaseUrl, close };
++module.exports = { isLoggedIn, login, searchUsers, scanBadge, getSelectedUserDetails, setBaseUrl, getBaseUrl, close };
+diff -ruN pa/badge-loader/preload.js pb/badge-loader/preload.js
+--- pa/badge-loader/preload.js	2026-11-06 12:39:31.478550850 +0000
++++ pb/badge-loader/preload.js	2026-11-06 12:39:31.482171429 +0000
+@@ -31,6 +31,11 @@
+   printCard: (options) => ipcRenderer.invoke('card:print', options),
+ });
+ 
++// ── CoBang scan events (subscribe only) ─────────────────────────────────────
++contextBridge.exposeInMainWorld('scanAPI', {
++  onEvent: (callback) => ipcRenderer.on('scan:event', (_event, payload) => callback(payload)),
++});
++
+ // ── Playwright / directory bridge ───────────────────────────────────────────
+ contextBridge.exposeInMainWorld('playwrightAPI', {
+   /** Returns true if a valid session already exists (no login needed). */
+diff -ruN pa/badge-loader/scan-handler.js pb/badge-loader/scan-handler.js
+--- pa/badge-loader/scan-handler.js	1970-01-01 00:00:00.000000000 +0000
++++ pb/badge-loader/scan-handler.js	2026-11-06 12:39:31.482298878 +0000
+@@ -0,0 +1,87 @@
++'use strict';
++/**
++ * scan-handler.js
++ * Turns a decrypted QR payload (from the CoBang inbox) into a directory lookup.
++ *
++ * Payload may be:
++ *   - a badge QR starting with "@CONCAT" -> replayed to the site as a keyboard-scanner scan
++ *   - a profile link on the connected site (…/housekeeping/cashier/<id>) -> loaded directly
++ *   - anything else (an ID, a name, a code)                              -> used as a search term
++ *
++ * Exactly one match loads the profile; several matches are handed to the search dropdown.
++ * Dependencies are injected so this can be unit-tested without Electron or Playwright.
++ */
++
++const MAX_PAYLOAD = 512;
++const PROFILE_PREFIX = '/housekeeping/cashier/';
++const BADGE_PREFIX = '@CONCAT'; // what the site's own scanner listener recognises
++
++function createScanHandler({ bridge, loadProfile, notify }) {
++  let queue = Promise.resolve();
++
++  function profileHref(text) {
++    if (text.startsWith(PROFILE_PREFIX)) return text;
++    let url;
++    try { url = new URL(text); } catch { return null; }
++    let base;
++    try { base = new URL(bridge.getBaseUrl()); } catch { return null; } // not logged in yet
++    if (url.origin !== base.origin) return null;
++    return url.pathname.startsWith(PROFILE_PREFIX) ? url.pathname : null;
++  }
++
++  async function resolve(raw) {
++    const text = String(raw ?? '').trim();
++    // QR content is untrusted input.
++    if (!text || text.length > MAX_PAYLOAD || /[\u0000-\u001f\u007f]/.test(text)) {
++      notify({ state: 'error', message: 'Scan ignored: unexpected QR content.' });
++      return;
++    }
++    notify({ state: 'searching' });
++    try {
++      if (text.startsWith(BADGE_PREFIX)) {
++        // Badge QR: hand it to the site's own scanner handling (see playwright.js scanBadge).
++        const out = await bridge.scanBadge(text);
++        if (out.kind === 'profile') {
++          await loadProfile(out.href);
++          notify({ state: 'selected' });
++        } else if (out.kind === 'results' && out.results.length === 1) {
++          await loadProfile(out.results[0].href);
++          notify({ state: 'selected' });
++        } else if (out.kind === 'results') {
++          notify({ state: 'multiple', count: out.results.length });
++        } else {
++          notify({ state: 'none' });
++        }
++        return;
++      }
++      const href = profileHref(text);
++      if (href) {
++        await loadProfile(href);
++        notify({ state: 'selected' });
++        return;
++      }
++      const results = await bridge.searchUsers(text);
++      if (results.length === 1) {
++        const [user] = results;
++        await loadProfile(user.href);
++        notify({ state: 'selected', name: [user.firstName, user.lastName].filter(Boolean).join(' ') });
++      } else if (results.length > 1) {
++        notify({ state: 'multiple', term: text, count: results.length });
++      } else {
++        notify({ state: 'none' });
++      }
++    } catch (err) {
++      notify({ state: 'error', message: err?.message || 'Scan lookup failed.' });
++    }
++  }
++
++  // Scans are handled one at a time, in order.
++  function handle(raw) {
++    queue = queue.then(() => resolve(raw));
++    return queue;
++  }
++
++  return { handle };
++}
++
++module.exports = { createScanHandler, MAX_PAYLOAD };
+diff -ruN pa/badge-loader/scan-ui.js pb/badge-loader/scan-ui.js
+--- pa/badge-loader/scan-ui.js	1970-01-01 00:00:00.000000000 +0000
++++ pb/badge-loader/scan-ui.js	2026-11-06 12:39:31.482308176 +0000
+@@ -0,0 +1,39 @@
++/**
++ * scan-ui.js
++ * Shows CoBang scan results. Single matches arrive via the normal registration
++ * panel; several matches are shown in the existing search dropdown.
++ */
++(function () {
++  'use strict';
++
++  const status = document.getElementById('scan-status');
++  const searchInput = document.getElementById('header-search-input');
++  if (!status || !searchInput || !window.scanAPI) return;
++
++  function say(text) { status.textContent = text; }
++
++  window.scanAPI.onEvent((event) => {
++    switch (event?.state) {
++      case 'searching':
++        say('Scan received, looking up…');
++        break;
++      case 'selected':
++        say('Scan matched, profile loaded.');
++        if (typeof event.name === 'string') searchInput.value = event.name;
++        break;
++      case 'multiple':
++        say(`Scan matched ${Number(event.count) || 'several'} users. Pick one.`);
++        if (typeof event.term === 'string') {
++          // Reuse the existing search UI: it runs the same search and lists the matches.
++          searchInput.value = event.term;
++          searchInput.dispatchEvent(new Event('input', { bubbles: true }));
++        }
++        break;
++      case 'none':
++        say('Scan matched no users.');
++        break;
++      default:
++        say(typeof event?.message === 'string' ? event.message : 'Scan failed.');
++    }
++  });
++})();
+diff -ruN pa/badge-loader/start.js pb/badge-loader/start.js
+--- pa/badge-loader/start.js	2026-11-06 12:39:31.478671454 +0000
++++ pb/badge-loader/start.js	2026-11-06 12:39:31.482279608 +0000
+@@ -1,8 +1,10 @@
+ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+ const fs = require('fs/promises');
++const os = require('os');
+ const path = require('path');
+ const { randomUUID } = require('crypto');
+ const playwrightBridge = require('./playwright.js');
++const { createScanHandler } = require('./scan-handler.js');
+ 
+ let latestRegistrationData = null;
+ let mainWin = null;
+@@ -169,34 +171,74 @@
+     }
+ });
+ 
+-// Load selected user's profile and push it to the registration panel
++// Load a user's profile and push it to the registration panel
++async function loadAndPushProfile(win, href) {
++    const sections = await playwrightBridge.getSelectedUserDetails(href);
++
++    // Each section's innerText comes out as value-first, label-last
++    // e.g. "#12345\nID:" — so last line is the label, rest is the value.
++    const data = {};
++    sections.forEach((section, i) => {
++        const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
++        if (lines.length === 0) return;
++        const key = lines[lines.length - 1].replace(/:$/, '').trim() || `Section ${i + 1}`;
++        const value = lines.slice(0, -1).join(' ').trim();
++        data[key] = value;
++    });
++
++    const payload = JSON.stringify({ data, sourceType: 'playwright' });
++    latestRegistrationData = payload;
++    if (win && !win.isDestroyed()) {
++        win.webContents.send('registration-data', payload);
++    }
++}
++
+ ipcMain.handle('playwright:select-user', async (event, href) => {
+     const win = BrowserWindow.fromWebContents(event.sender);
+     try {
+-        const sections = await playwrightBridge.getSelectedUserDetails(href);
+-
+-        // Each section's innerText comes out as value-first, label-last
+-        // e.g. "#12345\nID:" — so last line is the label, rest is the value.
+-        const data = {};
+-        sections.forEach((section, i) => {
+-            const lines = section.split('\n').map(l => l.trim()).filter(Boolean);
+-            if (lines.length === 0) return;
+-            const key = lines[lines.length - 1].replace(/:$/, '').trim() || `Section ${i + 1}`;
+-            const value = lines.slice(0, -1).join(' ').trim();
+-            data[key] = value;
+-        });
+-
+-        const payload = JSON.stringify({ data, sourceType: 'playwright' });
+-        latestRegistrationData = payload;
+-        if (win && !win.isDestroyed()) {
+-            win.webContents.send('registration-data', payload);
+-        }
++        await loadAndPushProfile(win, href);
+         return { ok: true };
+     } catch (err) {
+         return { ok: false, error: err.message };
+     }
+ });
+ 
++// ── CoBang scan inbox ───────────────────────────────────────────────────────
++// Encrypted QR scans arrive on a local Unix socket (see cobang-inbox.mjs) and are
++// resolved against the same directory the header search uses.
++
++const scanHandler = createScanHandler({
++    bridge: playwrightBridge,
++    loadProfile: (href) => loadAndPushProfile(mainWin, href),
++    notify: (event) => {
++        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('scan:event', event);
++    },
++});
++
++let scanInbox = null;
++
++async function startScanInbox() {
++    const keyPath = process.env.COBANG_INBOX_KEY || path.join(os.homedir(), '.ssh', 'cobang_inbox');
++    try {
++        await fs.access(keyPath);
++    } catch {
++        console.log(`[scan-inbox] no key at ${keyPath}; CoBang inbox disabled.`);
++        return;
++    }
++    try {
++        // cobang-inbox.mjs is ESM; dynamic import works from this CommonJS file.
++        const { startInbox } = await import('./cobang-inbox.mjs');
++        scanInbox = startInbox({
++            keyPath,
++            socketPath: process.env.COBANG_INBOX_SOCKET || undefined,
++            onMessage: (text) => { scanHandler.handle(text); },
++        });
++        scanInbox.on('error', (err) => console.error('[scan-inbox]', err.message));
++    } catch (err) {
++        console.error('[scan-inbox] failed to start:', err.message);
++    }
++}
++
+ // ── Window ──────────────────────────────────────────────────────────────────
+ 
+ const createWindow = () => {
+@@ -217,9 +259,11 @@
+ app.whenReady().then(() => {
+     if (process.platform === 'darwin' && app.dock) app.dock.setIcon(appIconPath);
+     createWindow();
++    startScanInbox();
+ });
+ 
+ app.on('will-quit', async () => {
++    scanInbox?.close();
+     await playwrightBridge.close();
+ });
+ 
+diff -ruN pa/badge-loader/test/scan-handler.test.js pb/badge-loader/test/scan-handler.test.js
+--- pa/badge-loader/test/scan-handler.test.js	1970-01-01 00:00:00.000000000 +0000
++++ pb/badge-loader/test/scan-handler.test.js	2026-11-06 12:39:31.482347781 +0000
+@@ -0,0 +1,139 @@
++// Run with: npm run test:unit  (node --test)
++const test = require('node:test');
++const assert = require('node:assert/strict');
++const { createScanHandler } = require('../scan-handler.js');
++
++function setup({ results = [], baseUrl = 'https://melbourne.concat.app', searchImpl } = {}) {
++  const calls = { search: [], load: [], events: [] };
++  const bridge = {
++    getBaseUrl: () => { if (!baseUrl) throw new Error('No base URL set.'); return baseUrl; },
++    searchUsers: searchImpl ?? (async (term) => { calls.search.push(term); return results; }),
++  };
++  const handler = createScanHandler({
++    bridge,
++    loadProfile: async (href) => { calls.load.push(href); },
++    notify: (e) => calls.events.push(e),
++  });
++  return { handler, calls };
++}
++const states = (calls) => calls.events.map((e) => e.state);
++
++test('single match loads the profile', async () => {
++  const { handler, calls } = setup({ results: [{ href: '/housekeeping/cashier/42', firstName: 'Pepsi', lastName: 'Man' }] });
++  await handler.handle('13');
++  assert.deepEqual(calls.search, ['13']);
++  assert.deepEqual(calls.load, ['/housekeeping/cashier/42']);
++  assert.deepEqual(states(calls), ['searching', 'selected']);
++  assert.equal(calls.events[1].name, 'Pepsi Man');
++});
++
++test('several matches go to the dropdown, nothing is auto-loaded', async () => {
++  const { handler, calls } = setup({ results: [{ href: '/housekeeping/cashier/1' }, { href: '/housekeeping/cashier/2' }] });
++  await handler.handle('Sam');
++  assert.deepEqual(calls.load, []);
++  assert.deepEqual(calls.events.at(-1), { state: 'multiple', term: 'Sam', count: 2 });
++});
++
++test('no match', async () => {
++  const { handler, calls } = setup({ results: [] });
++  await handler.handle('nobody');
++  assert.deepEqual(states(calls), ['searching', 'none']);
++});
++
++test('profile link on the connected site is loaded directly, without a search', async () => {
++  const { handler, calls } = setup();
++  await handler.handle('https://melbourne.concat.app/housekeeping/cashier/77?x=1');
++  assert.deepEqual(calls.search, []);
++  assert.deepEqual(calls.load, ['/housekeeping/cashier/77']);
++});
++
++test('relative profile path is loaded directly', async () => {
++  const { handler, calls } = setup();
++  await handler.handle('/housekeeping/cashier/9');
++  assert.deepEqual(calls.load, ['/housekeeping/cashier/9']);
++});
++
++test('link to another site is not followed; it is only a search term', async () => {
++  const { handler, calls } = setup({ results: [] });
++  await handler.handle('https://evil.example/housekeeping/cashier/1');
++  assert.deepEqual(calls.load, []);
++  assert.equal(calls.search.length, 1);
++});
++
++test('control characters and oversized payloads are rejected before any lookup', async () => {
++  const { handler, calls } = setup();
++  await handler.handle('abc\u0000def');
++  await handler.handle('x'.repeat(513));
++  await handler.handle('   ');
++  assert.deepEqual(calls.search, []);
++  assert.deepEqual(states(calls), ['error', 'error', 'error']);
++});
++
++test('lookup errors are reported and do not block later scans', async () => {
++  let n = 0;
++  const { handler, calls } = setup({
++    searchImpl: async () => { if (n++ === 0) throw new Error('Session expired — please log in again.'); return []; },
++  });
++  await handler.handle('1');
++  await handler.handle('2');
++  assert.deepEqual(calls.events.map((e) => e.state), ['searching', 'error', 'searching', 'none']);
++  assert.match(calls.events[1].message, /Session expired/);
++});
++
++test('scans are processed one at a time, in order', async () => {
++  const order = [];
++  const { handler } = setup({
++    searchImpl: async (term) => { order.push(`start ${term}`); await new Promise((r) => setTimeout(r, 20)); order.push(`end ${term}`); return []; },
++  });
++  await Promise.all([handler.handle('a'), handler.handle('b')]);
++  assert.deepEqual(order, ['start a', 'end a', 'start b', 'end b']);
++});
++
++// ── badge QR ("@CONCAT;UUID…") ──────────────────────────────────────────────
++function setupBadge(scanImpl) {
++  const calls = { scan: [], load: [], search: [], events: [] };
++  const handler = createScanHandler({
++    bridge: {
++      getBaseUrl: () => 'https://melbourne.concat.app',
++      searchUsers: async (t) => { calls.search.push(t); return []; },
++      scanBadge: async (t) => { calls.scan.push(t); return scanImpl(t); },
++    },
++    loadProfile: async (h) => { calls.load.push(h); },
++    notify: (e) => calls.events.push(e),
++  });
++  return { handler, calls };
++}
++const BADGE = '@CONCAT;UUID00000000-0000-4000-8000-000000000000';
++
++test('badge scan opening a profile loads it, and never uses the plain text search', async () => {
++  const { handler, calls } = setupBadge(async () => ({ kind: 'profile', href: '/housekeeping/cashier/42' }));
++  await handler.handle(BADGE);
++  assert.deepEqual(calls.scan, [BADGE]);
++  assert.deepEqual(calls.search, []);
++  assert.deepEqual(calls.load, ['/housekeeping/cashier/42']);
++  assert.deepEqual(states({ events: calls.events }), ['searching', 'selected']);
++});
++
++test('badge scan with no match', async () => {
++  const { handler, calls } = setupBadge(async () => ({ kind: 'none' }));
++  await handler.handle(BADGE);
++  assert.equal(calls.events.at(-1).state, 'none');
++});
++
++test('badge scan showing a single result row loads it', async () => {
++  const { handler, calls } = setupBadge(async () => ({ kind: 'results', results: [{ href: '/housekeeping/cashier/7' }] }));
++  await handler.handle(BADGE);
++  assert.deepEqual(calls.load, ['/housekeeping/cashier/7']);
++});
++
++test('badge scan with several rows reports a count and does not touch the search box', async () => {
++  const { handler, calls } = setupBadge(async () => ({ kind: 'results', results: [{ href: 'a' }, { href: 'b' }] }));
++  await handler.handle(BADGE);
++  assert.deepEqual(calls.events.at(-1), { state: 'multiple', count: 2 });
++});
++
++test('badge scan errors (e.g. site did not react) are reported', async () => {
++  const { handler, calls } = setupBadge(async () => { throw new Error('The site did not react to the scan.'); });
++  await handler.handle(BADGE);
++  assert.match(calls.events.at(-1).message, /did not react/);
++});

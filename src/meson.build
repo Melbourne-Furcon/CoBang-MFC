@@ -53,6 +53,7 @@ cobang_sources = [
   'ui.py',
   'window.py',
   'custom_types.py',
+  'inbox.py',
 ]
 
 install_data(cobang_sources, install_dir: moduledir)
