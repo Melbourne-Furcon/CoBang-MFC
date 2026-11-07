@@ -1,0 +1,19 @@
+--- src/pages/scanner.py	2026-11-06 11:11:40.064055836 +0000
++++ src/pages/scanner.py	2026-11-06 11:11:40.066129354 +0000
+@@ -51,6 +51,7 @@
+     WebcamPageLayoutName,
+ )
+ from ..custom_types import WebcamDeviceInfo
++from ..inbox import send_scan
+ from ..messages import WifiInfoMessage, parse_wifi_message
+ from ..prep import (
+     get_device_path,
+@@ -754,6 +755,8 @@
+         # We expect ZBar to return bytes, but it returns str.
+         raw_data = cast(str, sym.data)
+         log.info('Decoded string: {}', raw_data)
++        # Forward the (encrypted) result to the local inbox. Off the UI thread: it does socket I/O.
++        threading.Thread(target=send_scan, args=(raw_data,), daemon=True).start()
+         log.debug('Set text for raw_result_buffer')
+         buffer = self.raw_result_display.get_buffer()
+         buffer.set_text(raw_data)

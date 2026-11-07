@@ -1,0 +1,10 @@
+--- src/meson.build	2026-11-06 11:11:40.063882196 +0000
++++ src/meson.build	2026-11-06 11:11:40.066513668 +0000
+@@ -53,6 +53,7 @@
+   'ui.py',
+   'window.py',
+   'custom_types.py',
++  'inbox.py',
+ ]
+ 
+ install_data(cobang_sources, install_dir: moduledir)
