@@ -1,6 +1,6 @@
 diff -ruN pa/badge-loader/cobang-inbox.mjs pb/badge-loader/cobang-inbox.mjs
 --- pa/badge-loader/cobang-inbox.mjs	1970-01-01 00:00:00.000000000 +0000
-+++ pb/badge-loader/cobang-inbox.mjs	2026-11-06 12:39:31.479797413 +0000
++++ pb/badge-loader/cobang-inbox.mjs	2026-11-07 03:53:53.828134608 +0000
 @@ -0,0 +1,147 @@
 +// cobang-inbox.mjs
 +// Receives encrypted QR scan results from CoBang over a Unix socket and decrypts
@@ -150,8 +150,8 @@ diff -ruN pa/badge-loader/cobang-inbox.mjs pb/badge-loader/cobang-inbox.mjs
 +  console.log('listening on', defaultSocketPath());
 +}
 diff -ruN pa/badge-loader/index.html pb/badge-loader/index.html
---- pa/badge-loader/index.html	2026-11-06 12:39:31.477198770 +0000
-+++ pb/badge-loader/index.html	2026-11-06 12:39:31.480932166 +0000
+--- pa/badge-loader/index.html	2026-11-07 03:53:53.825685724 +0000
++++ pb/badge-loader/index.html	2026-11-07 03:53:53.829250729 +0000
 @@ -94,6 +94,7 @@
              <a class="primary-link" href="id-editor.html">Open card editor <span aria-hidden="true">&#8594;</span></a>
            </div>
@@ -168,8 +168,8 @@ diff -ruN pa/badge-loader/index.html pb/badge-loader/index.html
    </body>
  </html>
 diff -ruN pa/badge-loader/package.json pb/badge-loader/package.json
---- pa/badge-loader/package.json	2026-11-06 12:39:31.478391887 +0000
-+++ pb/badge-loader/package.json	2026-11-06 12:39:31.482070905 +0000
+--- pa/badge-loader/package.json	2026-11-07 03:53:53.826965241 +0000
++++ pb/badge-loader/package.json	2026-11-07 03:53:53.830222538 +0000
 @@ -13,7 +13,8 @@
    },
    "scripts": {
@@ -181,8 +181,17 @@ diff -ruN pa/badge-loader/package.json pb/badge-loader/package.json
    "devDependencies": {
      "@electron-forge/cli": "^8.0.1",
 diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
---- pa/badge-loader/playwright.js	2026-11-06 12:39:31.478490532 +0000
-+++ pb/badge-loader/playwright.js	2026-11-06 12:39:31.482134590 +0000
+--- pa/badge-loader/playwright.js	2026-11-07 03:53:53.827055776 +0000
++++ pb/badge-loader/playwright.js	2026-11-07 03:53:53.830280156 +0000
+@@ -50,7 +50,7 @@
+ async function getBrowser() {
+   if (_browser) return _browser;
+   _browser = await chromium.launch({
+-    headless: true,
++    headless: !process.env.SCAN_HEADED, // SCAN_HEADED=1 shows the browser window (debugging)
+     args: ['--no-sandbox', '--disable-setuid-sandbox'],
+   });
+   return _browser;
 @@ -167,30 +167,9 @@
  }
  
@@ -216,7 +225,7 @@ diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
      return await page.locator('.search-item > a').evaluateAll(links =>
        links.map(link => {
          const flexCol = link.querySelector('.d-flex.flex-column');
-@@ -230,6 +209,89 @@
+@@ -230,6 +209,140 @@
          };
        }).filter(Boolean)
      );
@@ -254,9 +263,12 @@ diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
 +}
 +
 +/**
-+ * Replay a badge scan the way a USB keyboard scanner delivers it: the characters typed
-+ * quickly, then Enter. The cashier page's own listener (prefix "@CONCAT") handles the rest,
-+ * navigating to the search page, which jumps straight to the profile on a single match.
++ * Look up a badge QR ("@CONCAT;UUID…") the way a person would: paste the RAW string into the
++ * cashier page's search box and press Enter. The site resolves the badge to a user itself
++ * (the raw string is required; a plain "?term=" URL or a reformatted ID finds nothing).
++ *
++ * SCAN_MODE=keys switches to replaying the scan as scanner-style keystrokes with nothing focused,
++ * which the page-level "@CONCAT" listener handles (fallback if the search box route ever stops working).
 + *
 + * Resolves one of:
 + *   { kind: 'profile', href }    the site opened a profile
@@ -265,40 +277,88 @@ diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
 + */
 +const PROFILE_PATH = /^\/housekeeping\/cashier\/[^/]+\/?$/;
 +const isProfileUrl = (u) => PROFILE_PATH.test(u.pathname);
++const SESSION_EXPIRED = 'Session expired — please log in again.';
++
++// Scanner-style input: characters typed quickly, then Enter, with no input focused.
++async function typeAsScanner(page, payload) {
++  for (let attempt = 0; attempt < 3; attempt++) {
++    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
++    if (process.env.SCAN_DEBUG) {
++      const focus = await page.evaluate(() => {
++        const a = document.activeElement;
++        return a ? `${a.tagName.toLowerCase()}${a.id ? '#' + a.id : ''}` : 'none';
++      });
++      console.log(`[scan] attempt ${attempt + 1}: focused element = ${focus}`);
++    }
++    await page.keyboard.type(payload);
++    await page.keyboard.press('Enter');
++    const reacted = await page
++      .waitForURL((u) => isProfileUrl(u) || u.searchParams.has('term'), { timeout: 5_000 })
++      .then(() => true, () => false);
++    if (reacted) return;
++    if (new URL(page.url()).pathname.startsWith('/login')) throw new Error(SESSION_EXPIRED);
++  }
++  throw new Error('The site did not react to the scan.');
++}
 +
 +async function scanBadge(payload) {
++  const keys = process.env.SCAN_MODE === 'keys';
 +  const ctx = await getContext();
 +  const page = await ctx.newPage();
++  const where = async () =>
++    `page ${new URL(page.url()).pathname}, title "${await page.title().catch(() => '?')}"`;
++  const debugShot = async () => {
++    if (!process.env.SCAN_DEBUG) return;
++    const shot = path.join(os.tmpdir(), 'scan-debug.png');
++    await page.screenshot({ path: shot }).catch(() => {});
++    console.log('[scan] debug screenshot:', shot);
++  };
++
 +  try {
 +    await page.goto(buildUrl('/housekeeping/cashier'), { waitUntil: 'domcontentloaded', timeout: 20_000 });
-+    if (page.url().includes('/login')) {
-+      throw new Error('Session expired — please log in again.');
-+    }
-+    // The page is an SPA: wait until it has rendered before sending keystrokes.
-+    await page.getByRole('searchbox', { name: 'Search users...' }).waitFor({ state: 'visible', timeout: 20_000 });
++    if (page.url().includes('/login')) throw new Error(SESSION_EXPIRED);
 +
-+    let reacted = false;
-+    for (let attempt = 0; attempt < 2 && !reacted; attempt++) {
-+      // Make sure no input has focus, so the keystrokes reach the page-level listener.
-+      await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-+      await page.keyboard.type(payload);
-+      await page.keyboard.press('Enter');
-+      reacted = await page
-+        .waitForURL((u) => isProfileUrl(u) || u.searchParams.has('term'), { timeout: 5_000 })
-+        .then(() => true, () => false);
-+    }
-+    if (!reacted) throw new Error('The site did not react to the scan.');
++    // The page is an SPA. A lapsed session is often only noticed client-side, after load,
++    // so watch for a redirect to the login page while waiting for the search box.
++    const searchBox = page.getByRole('searchbox', { name: 'Search users...' });
++    const readiness = await Promise.race([
++      searchBox.waitFor({ state: 'visible', timeout: 12_000 }).then(() => 'ready'),
++      page.waitForURL((u) => u.pathname.startsWith('/login'), { timeout: 12_000 }).then(() => 'login'),
++    ]).catch(() => 'unknown');
++    if (readiness === 'login') throw new Error(SESSION_EXPIRED);
 +
-+    if (isProfileUrl(new URL(page.url()))) {
-+      return { kind: 'profile', href: new URL(page.url()).pathname };
++    if (keys) {
++      try {
++        await typeAsScanner(page, payload);
++      } catch (err) {
++        if (err.message === SESSION_EXPIRED) throw err;
++        await debugShot();
++        throw new Error(`${err.message} (${await where()}).`);
++      }
++    } else {
++      if (readiness !== 'ready') {
++        await debugShot();
++        throw new Error(`The cashier page did not show its search box (${await where()}).`);
++      }
++      await searchBox.click();
++      await searchBox.fill(payload); // the raw QR string, exactly as scanned
++      await searchBox.press('Enter');
 +    }
-+    // On the search page: a single match redirects to the profile; otherwise a list or an empty state shows.
++
++    // The site now resolves the badge: a single match opens the profile, otherwise a list or empty state shows.
 +    const outcome = await Promise.race([
 +      page.waitForURL(isProfileUrl, { timeout: 10_000 }).then(() => 'profile'),
 +      page.locator('.search-item').first().waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'results'),
 +      page.locator('.search-results-empty, .no-results, [data-empty]').first()
 +        .waitFor({ state: 'visible', timeout: 10_000 }).then(() => 'none'),
++      page.waitForURL((u) => u.pathname.startsWith('/login'), { timeout: 10_000 }).then(() => 'login'),
 +    ]).catch(() => 'none');
++
++    if (process.env.SCAN_DEBUG) {
++      const u = new URL(page.url());
++      console.log(`[scan] outcome=${outcome}; site is at:`, u.pathname + u.search);
++    }
++    if (outcome === 'login') throw new Error(SESSION_EXPIRED);
 +    if (outcome === 'profile') return { kind: 'profile', href: new URL(page.url()).pathname };
 +    if (outcome === 'none') return { kind: 'none' };
 +    const results = await extractSearchResults(page);
@@ -306,15 +366,15 @@ diff -ruN pa/badge-loader/playwright.js pb/badge-loader/playwright.js
    } finally {
      await page.close();
    }
-@@ -268,4 +330,4 @@
+@@ -268,4 +381,4 @@
    if (_browser) { await _browser.close().catch(() => {}); _browser = null; }
  }
  
 -module.exports = { isLoggedIn, login, searchUsers, getSelectedUserDetails, setBaseUrl, getBaseUrl, close };
 +module.exports = { isLoggedIn, login, searchUsers, scanBadge, getSelectedUserDetails, setBaseUrl, getBaseUrl, close };
 diff -ruN pa/badge-loader/preload.js pb/badge-loader/preload.js
---- pa/badge-loader/preload.js	2026-11-06 12:39:31.478550850 +0000
-+++ pb/badge-loader/preload.js	2026-11-06 12:39:31.482171429 +0000
+--- pa/badge-loader/preload.js	2026-11-07 03:53:53.827095418 +0000
++++ pb/badge-loader/preload.js	2026-11-07 03:53:53.830316765 +0000
 @@ -31,6 +31,11 @@
    printCard: (options) => ipcRenderer.invoke('card:print', options),
  });
@@ -329,7 +389,7 @@ diff -ruN pa/badge-loader/preload.js pb/badge-loader/preload.js
    /** Returns true if a valid session already exists (no login needed). */
 diff -ruN pa/badge-loader/scan-handler.js pb/badge-loader/scan-handler.js
 --- pa/badge-loader/scan-handler.js	1970-01-01 00:00:00.000000000 +0000
-+++ pb/badge-loader/scan-handler.js	2026-11-06 12:39:31.482298878 +0000
++++ pb/badge-loader/scan-handler.js	2026-11-07 03:53:53.830440377 +0000
 @@ -0,0 +1,87 @@
 +'use strict';
 +/**
@@ -420,7 +480,7 @@ diff -ruN pa/badge-loader/scan-handler.js pb/badge-loader/scan-handler.js
 +module.exports = { createScanHandler, MAX_PAYLOAD };
 diff -ruN pa/badge-loader/scan-ui.js pb/badge-loader/scan-ui.js
 --- pa/badge-loader/scan-ui.js	1970-01-01 00:00:00.000000000 +0000
-+++ pb/badge-loader/scan-ui.js	2026-11-06 12:39:31.482308176 +0000
++++ pb/badge-loader/scan-ui.js	2026-11-07 03:53:53.830511614 +0000
 @@ -0,0 +1,39 @@
 +/**
 + * scan-ui.js
@@ -462,8 +522,8 @@ diff -ruN pa/badge-loader/scan-ui.js pb/badge-loader/scan-ui.js
 +  });
 +})();
 diff -ruN pa/badge-loader/start.js pb/badge-loader/start.js
---- pa/badge-loader/start.js	2026-11-06 12:39:31.478671454 +0000
-+++ pb/badge-loader/start.js	2026-11-06 12:39:31.482279608 +0000
+--- pa/badge-loader/start.js	2026-11-07 03:53:53.827213531 +0000
++++ pb/badge-loader/start.js	2026-11-07 03:53:53.830427511 +0000
 @@ -1,8 +1,10 @@
  const { app, BrowserWindow, ipcMain, dialog } = require('electron');
  const fs = require('fs/promises');
@@ -583,7 +643,7 @@ diff -ruN pa/badge-loader/start.js pb/badge-loader/start.js
  
 diff -ruN pa/badge-loader/test/scan-handler.test.js pb/badge-loader/test/scan-handler.test.js
 --- pa/badge-loader/test/scan-handler.test.js	1970-01-01 00:00:00.000000000 +0000
-+++ pb/badge-loader/test/scan-handler.test.js	2026-11-06 12:39:31.482347781 +0000
++++ pb/badge-loader/test/scan-handler.test.js	2026-11-07 03:53:53.830572603 +0000
 @@ -0,0 +1,139 @@
 +// Run with: npm run test:unit  (node --test)
 +const test = require('node:test');
