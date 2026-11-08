@@ -1,0 +1,537 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>vn.hoabinh.quan.CoBang</id>
+  <launchable type="desktop-id">vn.hoabinh.quan.CoBang.desktop</launchable>
+  <translation type="gettext">cobang</translation>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>CoBang</name>
+  <summary>QR code scanner for Linux desktop</summary>
+  <description>
+    <p>A native QR code and barcode scanner application for Linux desktop, filling the gap of a missing desktop-friendly scanner tool.</p>
+    <p>CoBang can scan barcode, QR code from webcam or from static image.
+ To be part of Linux desktop modernization, it is set to support Wayland (not XWayland), and only implement native GUI (no web crap).</p>
+  </description>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/v2.10/Scan-webcam-light-flatpak.png</image>
+      <caption>Scan from webcam (Flatpak).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/v2.10/Scan-webcam-dark-direct.png</image>
+      <caption>Scan from webcam (non-sandboxed).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/v2.10/Scan-image-wait-light.png</image>
+      <caption>Scan from image file.</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/hongquan/CoBang/refs/heads/main/misc/screenshots/CoBang_v1_6.png</image>
+      <caption>Scan from image file (mobile view).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/hongquan/CoBang/refs/heads/main/misc/screenshots/CoBang_v1_3.png</image>
+      <caption>Scan from webcam (mobile view, dark theme).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/Generate-from-text-light.png</image>
+      <caption>Generate from text (light).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/Generate-from-text-dark.png</image>
+      <caption>Generate from text (dark).</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/Generate-from-wifi-light.png</image>
+      <caption>Generate QR for WiFi (light)</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://quan-images.b-cdn.net/app-screenshots/cobang/Choose-wifi-dark.png</image>
+      <caption>Choose WiFi network from a list (dark)</caption>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://cobang.quan.hoabinh.vn</url>
+  <url type="bugtracker">https://github.com/hongquan/CoBang/issues</url>
+  <url type="translate">https://github.com/hongquan/CoBang/tree/main/po</url>
+  <developer id="vn.hoabinh.quan">
+    <name>Nguyễn Hồng Quân</name>
+  </developer>
+  <update_contact>ng.hong.quan_AT_gmail.com</update_contact>
+  <kudos>
+    <kudo>ModernToolkit</kudo>
+    <kudo>Notifications</kudo>
+  </kudos>
+  <releases>
+    <release version="2.11.1" date="2026-10-25" urgency="medium">
+      <description translate="no">
+        <p>No need to build libportal in Flatpak.</p>
+      </description>
+    </release>
+    <release version="2.11.0" date="2026-10-12" urgency="medium">
+      <description translate="no">
+        <p>Fix the logic of mirror switch button.</p>
+        <p>Eliminate redundant padding in Generator form.</p>
+        <p>Update Italian translation.</p>
+      </description>
+    </release>
+    <release version="2.10.0" date="2026-10-04" urgency="medium">
+      <description translate="no">
+        <p>Fix a crash due to webcam appsink callback being called after the Python interpreter was destroyed.</p>
+      </description>
+    </release>
+    <release version="2.9.1" date="2026-10-03" urgency="medium">
+      <description translate="no">
+        <p>Revert the attempt to fix crash in v2.9.0 because it does not work and introduces more bug.</p>
+      </description>
+    </release>
+    <release version="2.9.0" date="2026-10-01" urgency="medium">
+      <description translate="no">
+        <p>Attempt to fix crash due to video frame being processed after Python interpreter was destroyed.</p>
+        <p>Update to GNOME 51 in Flatpak.</p>
+      </description>
+    </release>
+    <release version="2.8.0" date="2026-08-19" urgency="medium">
+      <description translate="no">
+        <p>Fix retrieving password for saved WiFi network.</p>
+        <p>Updated Slovak language.</p>
+      </description>
+    </release>
+    <release version="2.7.2" date="2026-08-19" urgency="medium">
+      <description translate="no">
+        <p>Fix missing "generator" icon in Flatpak.</p>
+        <p>Shorten title.</p>
+      </description>
+    </release>
+    <release version="2.7.1" date="2026-08-04" urgency="medium">
+      <description translate="no">
+        <p>Support GStreamer v1.26 in Flatpak.</p>
+      </description>
+    </release>
+    <release version="2.7.0" date="2026-08-04" urgency="medium">
+      <description translate="no">
+        <p>Support hidden Wifi network in QR generation.</p>
+      </description>
+    </release>
+    <release version="2.6.0" date="2026-07-23" urgency="medium">
+      <description translate="no">
+        <p>New UI for QR generator: preview and adjust QR properties.</p>
+      </description>
+    </release>
+    <release version="2.5.2" date="2026-05-19" urgency="medium">
+      <description translate="no">
+        <p>Do not use `glsinkbin` on X11.</p>
+      </description>
+    </release>
+    <release version="2.5.1" date="2026-05-17" urgency="medium">
+      <description translate="no">
+        <p>Correctly handle the "missing GL context" in X11.</p>
+      </description>
+    </release>
+    <release version="2.5.0" date="2026-03-11" urgency="medium">
+      <description translate="no">
+        <p>Improve WiFi password retrieval methods.</p>
+      </description>
+    </release>
+    <release version="2.4.0" date="2026-03-08" urgency="medium">
+      <description translate="no">
+        <p>Try to recognize WPA3.</p>
+      </description>
+    </release>
+    <release version="2.3.1" date="2025-12-07" urgency="medium">
+      <description translate="no">
+        <p>Fix: Translated strings are not shown.</p>
+        <p>Don't show erroneous Wi-Fi networks.</p>
+      </description>
+    </release>
+    <release version="2.3.0" date="2025-12-04" urgency="medium">
+      <description translate="no">
+        <p>Fix: Failed to open About dialog.</p>
+        <p>Add animation for the magnifying glass.</p>
+      </description>
+    </release>
+    <release version="2.2.0" date="2025-11-29" urgency="medium">
+      <description translate="no">
+        <p>Fix: Failed to save Wi-Fi.</p>
+      </description>
+    </release>
+    <release version="2.1.0" date="2025-11-27" urgency="medium">
+      <description translate="no">
+        <p>Add search filter for WiFi networks.</p>
+        <p>Fix: Retrieved WiFi passwords are empty.</p>
+      </description>
+    </release>
+    <release version="2.0.0" date="2025-11-25" urgency="medium">
+      <description translate="no">
+        <p>Add QR code generator.</p>
+        <p>Add Croatian language.</p>
+      </description>
+    </release>
+    <release version="1.9.1" date="2025-11-11" urgency="medium">
+      <description translate="no">
+        <p>Replace seeing-symbolic icon.</p>
+      </description>
+    </release>
+    <release version="1.9.0" date="2025-11-08" urgency="medium">
+      <description translate="no">
+        <p>Use Adw.ShortcutsDialog for listing keyboard shortcut.</p>
+        <p>Update GNOME platform for Flatpak to v49.</p>
+      </description>
+    </release>
+    <release version="1.8.1" date="2025-10-12" urgency="medium">
+      <description translate="no">
+        <p>Update GNOME platform for Flatpak to v48.</p>
+        <p>Update Italian translations.</p>
+      </description>
+    </release>
+    <release version="1.8.0" date="2025-08-22" urgency="medium">
+      <description translate="no">
+        <p>Support inverted image.</p>
+        <p>Provide icon of 24x24 size.</p>
+      </description>
+    </release>
+    <release version="1.7.3" date="2025-07-04" urgency="medium">
+      <description translate="no">
+        <p>Fix handling pasted image from other apps.</p>
+      </description>
+    </release>
+    <release version="1.7.2" date="2025-06-02" urgency="medium">
+      <description translate="no">
+        <p>Fix logic of mirror button.</p>
+      </description>
+    </release>
+    <release version="1.7.1" date="2025-05-25" urgency="medium">
+      <description translate="no">
+        <p>Fix all green video on Ubuntu 25.04.</p>
+      </description>
+    </release>
+    <release version="1.7.0" date="2025-05-24" urgency="medium">
+      <description translate="no">
+        <p>Support Pipewire Source device for direct access.</p>
+      </description>
+    </release>
+    <release version="1.6.2" date="2025-04-25" urgency="medium">
+      <description translate="no">
+        <p>Fix: Some translations were not loaded.</p>
+      </description>
+    </release>
+    <release version="1.6.1" date="2025-04-12" urgency="medium">
+      <description translate="no">
+        <p>Try fixing pt_BR locale.</p>
+      </description>
+    </release>
+    <release version="1.6.0" date="2025-04-12" urgency="medium">
+      <description translate="no">
+        <p>Access webcam directly when running outside sandbox.</p>
+      </description>
+    </release>
+    <release version="1.5.0" date="2025-03-13" urgency="medium">
+      <description translate="no">
+        <p>Show scanning states.</p>
+      </description>
+    </release>
+    <release version="1.4.3" date="2025-03-04" urgency="medium">
+      <description translate="no">
+        <p>Fix desktop file.</p>
+      </description>
+    </release>
+    <release version="1.4.2" date="2025-03-04" urgency="medium">
+      <description translate="no">
+        <p>Fix Python libraries version for Flatpak.</p>
+      </description>
+    </release>
+    <release version="1.4.1" date="2025-03-04" urgency="medium">
+      <description translate="no">
+        <p>Disable "open file" feature in Flatpak.</p>
+      </description>
+    </release>
+    <release version="1.4.0" date="2025-03-02" urgency="medium">
+      <description translate="no">
+        <p>Restore drag-n-drop feature.</p>
+        <p>Fix handling of image with transparency.</p>
+      </description>
+    </release>
+    <release version="1.3.0" date="2025-03-02" urgency="medium">
+      <description translate="no">
+        <p>Let open app with file chosen.</p>
+      </description>
+    </release>
+    <release version="1.2.1" date="2025-02-02" urgency="medium">
+      <description translate="no">
+        <p>Don't use SpinnerPaintale.</p>
+      </description>
+    </release>
+    <release version="1.2.0" date="2025-02-01" urgency="medium">
+      <description translate="no">
+        <p>Improve UI for mobile screen.</p>
+      </description>
+    </release>
+    <release version="1.1.0" date="2025-01-31" urgency="medium">
+      <description translate="no">
+        <p>Add explanation text for "Save" button.</p>
+        <p>Show the status of webcam being not available.</p>
+        <p>Clean code.</p>
+      </description>
+    </release>
+    <release version="1.0.0" date="2025-01-28" urgency="medium">
+      <description translate="no">
+        <p>Finally reach v1.0.</p>
+        <p>Port to GTK4 + Adwaita.</p>
+        <p>Fix responsive UI.</p>
+      </description>
+    </release>
+    <release version="0.15.0" date="2025-01-07" urgency="medium">
+      <description translate="no">
+        <p>Replace the unreleased v0.14.2</p>
+        <p>Change icons.</p>
+        <p>Drop single-version dependency.</p>
+        <p>Add Spanish translation.</p>
+      </description>
+    </release>
+    <release version="0.14.2" date="2025-01-06" urgency="medium">
+      <description translate="no">
+        <p>Change icons.</p>
+        <p>Drop single-version dependency.</p>
+        <p>Add Spanish translation.</p>
+      </description>
+    </release>
+    <release version="0.14.1" date="2024-06-19" urgency="medium">
+      <description translate="no">
+        <p>Fix copy/paste image.</p>
+        <p>Update translations.</p>
+        <p>Hide mirror button when webcam is not used.</p>
+      </description>
+    </release>
+    <release version="0.14.0" date="2024-06-15" urgency="medium">
+      <description translate="no">
+        <p>Add mirror mode.</p>
+      </description>
+    </release>
+    <release version="0.13.1" date="2024-06-08" urgency="medium">
+      <description translate="no">
+        <p>Update translation.</p>
+        <p>Add 48x48 icon to show in menu.</p>
+      </description>
+    </release>
+    <release version="0.13.0" date="2024-06-06" urgency="medium">
+      <description translate="no">
+        <p>Add German and Russian translations.</p>
+        <p>Handle error with libcamera.</p>
+      </description>
+    </release>
+    <release version="0.12.0" date="2024-04-30" urgency="medium">
+      <description translate="no">
+        <p>Working with Ubuntu 24.04.</p>
+      </description>
+    </release>
+    <release version="0.10.9" date="2024-03-27" urgency="medium">
+      <description translate="no">
+        <p>Set application name for Wayland.</p>
+      </description>
+    </release>
+    <release version="0.10.8" date="2024-03-26" urgency="medium">
+      <description translate="no">
+        <p>Fix setting Wayland App ID.</p>
+      </description>
+    </release>
+    <release version="0.10.7" date="2024-03-26" urgency="medium">
+      <description translate="no">
+        <p>Another attempt to set WM_CLASS for X11.</p>
+      </description>
+    </release>
+    <release version="0.10.6" date="2024-03-25" urgency="medium">
+      <description translate="no">
+        <p>Set WM_CLASS for X11.</p>
+      </description>
+    </release>
+    <release version="0.10.5" date="2024-01-19" urgency="medium">
+      <description translate="no">
+        <p>Update translation.</p>
+        <p>Fix Gschema file.</p>
+      </description>
+    </release>
+    <release version="0.10.4" date="2024-01-04" urgency="medium">
+      <description translate="no">
+        <p>Upgrade Python packages for Flatpak</p>
+      </description>
+    </release>
+    <release version="0.10.3" date="2023-12-27" urgency="medium">
+      <description translate="no">
+        <p>Try Gnome v45 for Flatpak.</p>
+      </description>
+    </release>
+    <release version="0.10.2" date="2023-12-09" urgency="medium">
+      <description translate="no">
+        <p>Upgrade Gnome runtime for Flatpak.</p>
+      </description>
+    </release>
+    <release version="0.10.1" date="2023-04-26" urgency="medium">
+      <description translate="no">
+        <p>Fix building for Flatpak.</p>
+      </description>
+    </release>
+    <release version="0.10.0" date="2023-04-26" urgency="medium">
+      <description translate="no">
+        <p>Add French translation.</p>
+        <p>Increase opacity for Play &amp; Pause buttons.</p>
+      </description>
+    </release>
+    <release version="0.9.10" date="2023-01-05" urgency="medium">
+      <description translate="no">
+        <p>Use right image of Lepironia articulata.</p>
+      </description>
+    </release>
+    <release version="0.9.9" date="2022-12-29" urgency="medium">
+      <description translate="no">
+        <p>Upgrade runtime for Flatpak.</p>
+        <p>Fix typos</p>
+      </description>
+    </release>
+    <release version="0.9.8" date="2022-10-13" urgency="medium">
+      <description translate="no">
+        <p>Increase displayed wifi password length.</p>
+      </description>
+    </release>
+    <release version="0.9.7" date="2022-08-30" urgency="medium">
+      <description translate="no">
+        <p>Add Turkish translation.</p>
+      </description>
+    </release>
+    <release version="0.9.6" date="2021-12-08" urgency="medium">
+      <description translate="no">
+        <p>Fix building Flatpak for v0.9+.</p>
+      </description>
+    </release>
+    <release version="0.9.5" date="2021-11-06" urgency="medium">
+      <description translate="no">
+        <p>Try to fix crash on displaying wifi result.</p>
+      </description>
+    </release>
+    <release version="0.9.4" date="2021-09-14" urgency="medium">
+      <description translate="no">
+        <p>Fix overflow UI in phone screen.</p>
+      </description>
+    </release>
+    <release version="0.9.3" date="2021-09-12" urgency="medium">
+      <description translate="no">
+        <p>Automatically choose the best layout for the screen.</p>
+      </description>
+    </release>
+    <release version="0.9.2" date="2021-09-11" urgency="medium">
+      <description translate="no">
+        <p>Reduce scrolling on mobile screen.</p>
+      </description>
+    </release>
+    <release version="0.9.1" date="2021-09-09" urgency="medium">
+      <description translate="no">
+        <p>Prevent redundant empty space.</p>
+      </description>
+    </release>
+    <release version="0.9.0" date="2021-09-07" urgency="medium">
+      <description translate="no">
+        <p>Support mobile view with responsive UI.</p>
+      </description>
+    </release>
+    <release version="0.8.3" date="2021-08-18" urgency="medium">
+      <description translate="no">
+        <p>Update Italian translation.</p>
+      </description>
+    </release>
+    <release version="0.8.2" date="2021-07-31" urgency="medium">
+      <description translate="no">
+        <p>Lower down Meson version requirement.</p>
+      </description>
+    </release>
+    <release version="0.8.1" date="2021-07-03" urgency="medium">
+      <description translate="no">
+        <p>Fix licensing.</p>
+      </description>
+    </release>
+    <release version="0.8.0" date="2021-03-07" urgency="medium">
+      <description translate="no">
+        <p>Let play webcam from PipeWire.</p>
+      </description>
+    </release>
+    <release version="0.7.0" date="2021-03-06" urgency="medium">
+      <description translate="no">
+        <p>Add button to copy raw result.</p>
+      </description>
+    </release>
+    <release version="0.6.4" date="2021-03-06" urgency="medium">
+      <description translate="no">
+        <p>Fix appdata file.</p>
+      </description>
+    </release>
+    <release version="0.6.3" date="2021-03-06" urgency="medium">
+      <description translate="no">
+        <p>Support more languages.</p>
+      </description>
+    </release>
+    <release version="0.6.0" date="2020-10-26" urgency="medium">
+      <description translate="no">
+        <p>Compatible with GStreamer v1.18.</p>
+      </description>
+    </release>
+    <release version="0.5.6" date="2020-06-27" urgency="medium">
+      <description translate="no">
+        <p>Fix handling HTTP file in some unusual case.</p>
+      </description>
+    </release>
+    <release version="0.5.5" date="2020-06-24" urgency="medium">
+      <description translate="no">
+        <p>Fix AppStream data.</p>
+      </description>
+    </release>
+    <release version="0.5.4" date="2020-06-24" urgency="medium">
+      <description translate="no">
+        <p>Move Play &amp; Pause buttons to overlay.</p>
+      </description>
+    </release>
+    <release version="0.5.3" date="2020-06-23" urgency="medium">
+      <description translate="no">
+        <p>Fix missing files when building Flatpak.</p>
+      </description>
+    </release>
+    <release version="0.5.2" date="2020-06-22" urgency="medium">
+      <description translate="no">
+        <p>Able to build Flatpak (successfully add NetworkManager dependency).</p>
+      </description>
+    </release>
+    <release version="0.5.1" date="2020-06-20" urgency="medium">
+      <description translate="no">
+        <p>Fix crash when detecting WiFi content from webcam.</p>
+        <p>Fix: Forgot to check SVG in some cases.</p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2020-06-19" urgency="medium">
+      <description translate="no">
+        <p>Display result URL with a link.</p>
+        <p>Display result WiFi info and let save it to NetworkManager.</p>
+        <p>Support scanning from SVG file.</p>
+        <p>Change license to GPL-v3.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2020-06-07" urgency="medium">
+      <description translate="no">
+        <p>Release on FlatHub.</p>
+        <p>Test and verify to work on X11-based DEs like KDE, Xfce, LxQt.</p>
+      </description>
+    </release>
+    <release version="0.3.2" date="2020-06-07" urgency="medium">
+      <description translate="no">
+        <p>Fix to work on non-OpenGL environment.</p>
+        <p>Support PipeWire.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2020-06-04" urgency="medium">
+      <description translate="no">
+        <p>Let drag, drop and paste image</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2020-06-01" urgency="medium">
+      <description translate="no">
+        <p>Drop Cheese dependency</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

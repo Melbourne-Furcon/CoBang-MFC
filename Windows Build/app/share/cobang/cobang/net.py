@@ -1,0 +1,248 @@
+from enum import StrEnum
+
+import gi
+
+
+gi.require_version('NM', '1.0')
+gi.require_version('GLib', '2.0')
+gi.require_version('Gio', '2.0')
+gi.require_version('GObject', '2.0')
+from gi.repository import NM, Gio, GLib, GObject  # type: ignore[attr-defined]
+from logbook import Logger
+
+from .consts import APP_ID
+from .custom_types import WifiNetworkInfo
+from .messages import WifiInfoMessage
+
+
+log = Logger(__name__)
+
+
+class NMWifiKeyMn(StrEnum):
+    WEP = 'none'
+    WPA = 'wpa-psk'
+    WPA2 = 'wpa-psk'
+    WPA3 = 'sae'
+    WPA2_EAP = 'wpa-eap'
+
+
+# Doc: https://lazka.github.io/pgi-docs/#NM-1.0/classes/SecretAgentOld.html
+# Ref: https://github.com/NetworkManager/NetworkManager/blob/main/examples/python/gi/secret-agent.py
+class DummyAgent(NM.SecretAgentOld):
+    """
+    A minimal SecretAgent implementation.
+
+    `NM.RemoteConnection.get_secrets_async` requires an active secret agent, or
+    it will get "No agents were available for this request" error. So
+    this DummyAgent just stand there to satisfy `RemoteConnection` without doing anything.
+    """
+
+    def __init__(self):
+        super().__init__(
+            identifier=f'{APP_ID}.NetworkManager.SecretAgent',
+            auto_register=True,
+            capabilities=NM.SecretAgentCapabilities.VPN_HINTS,
+        )
+        super().init()
+
+    def do_get_secrets(self, connection, connection_path, setting_name, hints, flags, callback, user_data):
+        # We return NOSECRETS to tell NetworkManager to ask another agent for password.
+        # I have no idea why NetworkManager can ask another agent but still requires us
+        # to provide a dummy agent T.T
+        error = GLib.Error.new_literal(
+            NM.SecretAgentError.quark(),
+            'No secrets found',
+            NM.SecretAgentError.NOSECRETS,
+        )
+        callback(self, connection, None, error)
+
+    def do_save_secrets(self, connection, connection_path, callback, user_data):
+        callback(self, connection, None)
+
+    def do_delete_secrets(self, connection, connection_path, callback, user_data):
+        callback(self, connection, None)
+
+    def do_cancel_get_secrets(self, connection_path, setting_name):
+        pass
+
+
+class WifiSecretsRetriever(GObject.GObject):
+    """One-shot helper retrieving stored secrets of saved WiFi connections.
+
+    The caller creates it per batch and must not attach it to any long-lived
+    object: the bound method callbacks of its in-flight `get_secrets_async()`
+    requests are the only owners, so the instance is dropped after the last
+    secret has been delivered.
+    """
+
+    __gtype_name__ = 'NMWifiSecretsRetriever'
+
+    # Emits only terminal outcomes:
+    # - failed=True when get_secrets_finish() fails.
+    # - failed=False with password when a non-empty password string is retrieved.
+    wifi_secrets_retrieved = GObject.Signal(
+        'wifi-secrets-retrieved',
+        flags=GObject.SignalFlags.RUN_LAST,
+        arg_types=(str, bool, str),
+    )
+
+    def request_saved_wifi_secrets(self, nm_client: NM.Client):
+        """Request wireless secrets asynchronously for all saved WiFi connections."""
+        for conn in nm_client.get_connections():
+            w_setting = conn.get_setting_wireless()
+            if not w_setting:
+                continue
+
+            w_sec = conn.get_setting_wireless_security()
+            if not w_sec:
+                log.debug('Skipping connection {} with no security settings', conn.get_uuid())
+                continue
+            if w_sec.get_key_mgmt() in ('wpa-eap', 'wpa-eap-suite-b-192'):
+                # For WPA-EAP (802-1x), we need to request 802-1x secrets explicitly
+                conn.get_secrets_async(
+                    NM.SETTING_802_1X_SETTING_NAME,
+                    None,
+                    self.on_wifi_secrets_retrieved,
+                )
+            else:
+                # Each in-flight request owns a reference to the bound method
+                # `self.on_wifi_secrets_retrieved`, which in turn keeps this
+                # retriever alive until its callback delivered the secret.
+                conn.get_secrets_async(
+                    NM.SETTING_WIRELESS_SECURITY_SETTING_NAME,
+                    None,
+                    self.on_wifi_secrets_retrieved,
+                )
+
+    def on_wifi_secrets_retrieved(self, conn: NM.RemoteConnection, res: Gio.AsyncResult):
+        uuid = conn.get_uuid()
+        password = ''
+        try:
+            secrets_variant = conn.get_secrets_finish(res)
+            if secrets_variant:
+                secrets = secrets_variant.unpack()
+                wireless_security = secrets.get(NM.SETTING_WIRELESS_SECURITY_SETTING_NAME, {})
+                one_x = secrets.get(NM.SETTING_802_1X_SETTING_NAME, {})
+
+                password = (
+                    wireless_security.get('psk')
+                    or wireless_security.get('wep-key0')
+                    or wireless_security.get('leap-password')
+                    or one_x.get('password')
+                    or ''
+                )
+        except GLib.Error as e:
+            log.warning('get_secrets_async for connection {} threw an error: {}', uuid, e)
+
+        if isinstance(password, str) and password:
+            self.wifi_secrets_retrieved.emit(uuid, False, password)
+            return
+
+        # Sometimes we failed to get secrets, log here to debug later.
+        log.debug('Retrieved no secrets for WiFi connection {} ({})', uuid, conn.get_path())
+        self.wifi_secrets_retrieved.emit(uuid, True, '')
+
+
+def is_connected_same_wifi(ssid: str, client: NM.Client) -> bool:
+    try:
+        conn = next(
+            c for c in client.get_active_connections() if c.get_connection_type() == NM.SETTING_WIRELESS_SETTING_NAME
+        )
+    except StopIteration:
+        return False
+    # We don't need to compare password, because if we are connected to a wifi network
+    # of the same SSID, the connected's password is more correct.
+    return conn.get_id() == ssid
+
+
+class WiFiSaver(GObject.GObject):
+    __gtype_name__ = 'WiFiSaver'
+
+    new_connection_saved = GObject.Signal('new-connection-saved', arg_types=(str,))
+
+    def save_connection(self, info: WifiInfoMessage, nm_client: NM.Client):
+        conn = NM.RemoteConnection()
+        base = NM.SettingConnection.new()
+        connection_name = info.ssid
+        base.set_property(NM.SETTING_CONNECTION_ID, connection_name)
+        conn.add_setting(base)
+        ssid = GLib.Bytes.new(info.ssid.encode())
+        wireless = NM.SettingWireless.new()
+        wireless.set_property(NM.SETTING_WIRELESS_SSID, ssid)
+        wireless.set_property(NM.SETTING_WIRELESS_HIDDEN, info.hidden)
+        secure = NM.SettingWirelessSecurity.new()
+        try:
+            key_mn = NMWifiKeyMn[info.auth_type.name] if info.auth_type else None
+        except KeyError:
+            key_mn = None
+        if key_mn:
+            secure.set_property(NM.SETTING_WIRELESS_SECURITY_KEY_MGMT, key_mn)
+        if info.password:
+            if key_mn == NMWifiKeyMn.WPA:
+                secure.set_property(NM.SETTING_WIRELESS_SECURITY_PSK, info.password)
+            elif key_mn == NMWifiKeyMn.WEP:
+                secure.set_property(NM.SETTING_WIRELESS_SECURITY_WEP_KEY0, info.password)
+        conn.add_setting(wireless)
+        conn.add_setting(secure)
+        nm_client.add_connection_async(conn, True, None, self.on_connection_added, ssid)
+
+    def on_connection_added(self, client: NM.Client, res: Gio.AsyncResult, ssid: str):
+        try:
+            conn = client.add_connection_finish(res)
+            log.info('Successfully added and activated WiFi connection: {}', conn.get_id())
+        except GLib.Error as e:
+            log.error('Failed to add/activate WiFi connection: {}', e)
+            return
+        self.new_connection_saved.emit(ssid)
+
+
+def get_saved_wifi_networks(nm_client: NM.Client) -> list[WifiNetworkInfo]:
+    """Return saved WiFi networks with active state and best-known signal strength."""
+    wifi_networks: list[WifiNetworkInfo] = []
+    connections = nm_client.get_connections()
+
+    # Map SSID -> strongest signal (0-100)
+    strengths: dict[str, int] = {}
+    for device in nm_client.get_devices():  # type: ignore[attr-defined]
+        if device.get_device_type() != NM.DeviceType.WIFI:
+            continue
+        for ap in device.get_access_points():
+            if not (ssid_bytes := ap.get_ssid()):
+                continue
+            ssid = ssid_bytes.get_data().decode('utf-8', errors='ignore')
+            strengths[ssid] = max(strengths.get(ssid, 0), ap.get_strength())
+
+    # Currently active WiFi SSIDs
+    active_ssids = {
+        ac.get_id()
+        for ac in nm_client.get_active_connections()
+        if ac.get_connection_type() == NM.SETTING_WIRELESS_SETTING_NAME
+    }
+
+    for conn in connections:
+        if not (wireless_setting := conn.get_setting_wireless()):
+            continue
+        if not (ssid_bytes := wireless_setting.get_ssid()):
+            continue
+        ssid = ssid_bytes.get_data().decode('utf-8', errors='ignore')
+
+        # It is not possible to get Wi-Fi password from NM.SettingWirelessSecurity.
+        key_mgmt = 'none'
+        if wireless_security := conn.get_setting_wireless_security():
+            key_mgmt = wireless_security.get_key_mgmt() or 'none'
+
+        wifi_networks.append(
+            WifiNetworkInfo(
+                uuid=conn.get_uuid(),
+                ssid=ssid,
+                password='',
+                key_mgmt=key_mgmt,
+                hidden=wireless_setting.get_hidden(),
+                is_active=ssid in active_ssids,
+                signal_strength=strengths.get(ssid, 0),
+            )
+        )
+
+    # Sort: active first, then by descending signal strength.
+    wifi_networks.sort(key=lambda w: (w.is_active, w.signal_strength), reverse=True)
+    return wifi_networks

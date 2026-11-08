@@ -1,0 +1,251 @@
+Building ZBar On Linux
+======================
+
+ZBar build uses Meson and Ninja, which requires a separate directory to
+generate the binary files outside the source tree.
+
+It follows some instructions about how to install on different systems.
+
+They assume that the build directory will be named `build`.
+
+Ubuntu and Debian package dependencies
+--------------------------------------
+
+Install the compiler and basic build tools:
+
+    sudo apt-get update
+    sudo apt-get install build-essential meson ninja-build pkg-config gettext
+
+Meson enables optional components when their development packages are
+available. To build the common desktop components used by CI, install their
+dependencies as well:
+
+    sudo apt-get install libdbus-1-dev libjpeg-dev libmagick++-dev \
+        libv4l-dev libgtk-3-dev libgirepository1.0-dev \
+        gobject-introspection libqt5x11extras5-dev qtbase5-dev \
+        python3-dev python3-gi default-jdk-headless xmlto xvfb
+
+To use GTK 2 instead of GTK 3, install `libgtk2.0-dev` and select `-Dgtk=gtk2`
+when configuring.
+
+
+Fedora package dependencies
+---------------------------
+
+Install the build tools and development packages used for Fedora builds:
+
+    sudo dnf install meson ninja-build dbus-devel gettext-devel \
+        GraphicsMagick-devel gtk3-devel gobject-introspection-devel \
+        libX11-devel libjpeg-devel libv4l-devel qt5-qtbase-devel \
+        qt5-qtx11extras-devel python3-devel xmlto java-devel
+
+Building with meson
+-------------------
+
+Once package dependencies are satisfied, building it can be done with:
+
+    meson setup build
+    meson compile -C build
+
+To install the build:
+
+    sudo meson install -C build
+
+To run ZBar tests:
+
+    meson test -C build
+
+Notice that there are several features that can be optionally built or
+excluded. See `meson_options.txt` for a list of them. For instance,
+to disable video capture, you may use, instead of `meson setup`:
+
+    meson setup build -Dvideo=false
+
+You can see all available options by using:
+
+    meson configure build
+
+Choose the core ZBar and GTK library variants with `-Dlibrary_type=static`,
+`-Dlibrary_type=shared`, or `-Dlibrary_type=both`. The default is `both`.
+For example, to build only static variants of those libraries:
+
+    meson setup build -Dlibrary_type=static
+
+Meson normally installs under `/usr/local`. Set `--prefix=/usr` during setup
+-to choose a different prefix, like on this example:
+
+    meson setup build -Dgtk=no -Dpython=no -Dqt=false --prefix=/usr
+
+
+Building ZBar On Windows
+========================
+
+NOTE:
+
+This is a simplified version of what it was done in order to do the
+CI builds via Github workflow. The the instructions here may be incomplete.
+and/or not reflect the best way to compile ZBar on Windows.
+
+If you find inconsistencies, feel free to submit patches improving the
+building steps.
+
+The native Windows CI configuration builds the core library, `zbarimg`, and
+portable test programs. It leaves out bindings, video capture, and GUI tests.
+
+Cross-compiling on Ubuntu with MinGW-w64
+-----------------------------------------
+
+The Ubuntu GitHub Actions jobs cross-compile 32-bit Windows binaries with
+MinGW-w64. Install the same build tools and Windows headers:
+
+    sudo apt-get update
+    sudo apt-get install -y meson ninja-build pkg-config \
+        gcc-mingw-w64 g++-mingw-w64 mingw-w64-i686-dev \
+        win-iconv-mingw-w64-dev
+
+Create a Meson cross file named `mingw-cross.ini`:
+
+    [binaries]
+    c = 'i686-w64-mingw32-gcc'
+    cpp = 'i686-w64-mingw32-g++'
+    ar = 'i686-w64-mingw32-ar'
+    strip = 'i686-w64-mingw32-strip'
+    windres = 'i686-w64-mingw32-windres'
+    pkgconfig = 'pkg-config'
+
+    [properties]
+    needs_exe_wrapper = true
+
+    [built-in options]
+    c_args = ['-I/usr/i686-w64-mingw32/include']
+    c_link_args = ['-L/usr/i686-w64-mingw32/lib']
+
+    [host_machine]
+    system = 'windows'
+    cpu_family = 'x86'
+    cpu = 'i686'
+    endian = 'little'
+
+Configure and build with the Video for Windows backend:
+
+    meson setup build --cross-file mingw-cross.ini \
+        -Dgtk=no -Dpython=no -Dqt=false -Djava=disabled \
+        -Dgir=false -Dimagemagick=disabled -Dgraphicsmagick=disabled \
+        -Djpeg=disabled -Ddbus=disabled -Dnls=disabled -Dx11=disabled \
+        -Dxshm=disabled -Dxv=disabled -Dbuild_tests=false -Dvideo=true
+    meson compile -C build
+
+To use DirectShow instead, add `-Ddirectshow=true` to the `meson setup`
+command. Meson installs the cross-compiled files under `build`; to stage
+them in a separate directory, run:
+
+    DESTDIR="$PWD/stage" meson install -C build
+
+Building natively on Windows with MSYS2
+---------------------------------------
+
+The Windows CI job builds with MSYS2 UCRT64. Install MSYS2 from
+<https://www.msys2.org/>, open the UCRT64 terminal, and install the CI build
+tools:
+
+    pacman -Syu --needed \
+        mingw-w64-ucrt-x86_64-gcc \
+        mingw-w64-ucrt-x86_64-pkgconf \
+        mingw-w64-ucrt-x86_64-meson \
+        mingw-w64-ucrt-x86_64-ninja \
+        mingw-w64-ucrt-x86_64-libiconv \
+        mingw-w64-ucrt-x86_64-gettext \
+        mingw-w64-ucrt-x86_64-imagemagick
+
+From the repository root, configure and build the native Windows test
+configuration:
+
+    meson setup build -Dvideo=false -Dgtk=no -Dpython=no -Dqt=false \
+        -Dgir=false -Djava=disabled -Ddoc=false -Ddbus=disabled \
+        -Dimagemagick=enabled -Dnls=disabled -Dx11=disabled \
+        -Dxshm=disabled -Dxv=disabled
+    meson compile -C build
+    meson test -C build --no-suite display --no-suite regression \
+        --print-errorlogs
+
+These tests cover decoder behavior, image conversion, and image scanning. The
+display and long decoder regression suites are skipped. To install, run
+`meson install -C build` from the UCRT64 terminal.
+
+Building the Windows release packages
+-------------------------------------
+
+Install MSYS2 and Python, and ensure `python` is on PATH. Open the MINGW64 terminal
+for 64-bit packages or MINGW32 for 32-bit packages. From the repository root,
+set `ARCH=x86_64` for MINGW64 or `ARCH=i686` for MINGW32 and install the build
+tools:
+
+    export ARCH=x86_64
+    pacman -Syu --needed base-devel git \
+        mingw-w64-${ARCH}-{gcc,meson,ninja,cmake,pkgconf}
+
+In a regular PowerShell window, check out the same vcpkg revision as the
+workflow and install the dependencies:
+
+    git clone https://github.com/microsoft/vcpkg.git C:/vcpkg
+    git -C C:/vcpkg checkout 9e593bb18ea69cc5095e012465dcd675a822ed0d
+    $env:VCPKG_ROOT = "C:/vcpkg"
+    $env:PATH = "C:\msys64\mingw64\bin;$env:PATH"
+    $triplet = "x64-mingw-static"
+    & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+    & "$env:VCPKG_ROOT/vcpkg.exe" install graphicsmagick libiconv --classic --triplet $triplet --host-triplet $triplet
+
+For 32-bit packages, use `C:\msys64\mingw32\bin` and `x86-mingw-static`.
+Adjust the MSYS2 path if installed elsewhere. Keep MSYS2's `usr/bin` out of
+this PowerShell PATH so vcpkg can select its own build tools.
+Use a vcpkg path outside `C:\Users`: the stock GraphicsMagick port can fail
+to compile when that path appears unescaped in generated C strings.
+
+Return to the matching MINGW64 or MINGW32 terminal, retaining the `ARCH`
+setting above, to build, stage and package both camera backends:
+
+    export VCPKG_ROOT=C:/vcpkg
+    python tools/build_windows_release.py
+
+Building ZBar On MacOS
+======================
+
+NOTE:
+
+This is a simplified version of what it was done in order to do the
+CI builds via Github workflow. The the instructions here may be incomplete.
+and/or not reflect the best way to compile ZBar on MacOS.
+
+If you find inconsistencies, feel free to submit patches improving the
+building steps.
+
+The macOS CI configuration builds the core library, `zbarimg`, and portable
+test programs. It leaves out bindings, video capture, and GUI tests.
+
+
+Install the dependencies used by the macOS GitHub Actions build, including
+ImageMagick for `zbarimg` and the image scanning tests:
+
+    brew install meson ninja pkg-config libjpeg-turbo gettext imagemagick
+
+Set the include and library paths from Homebrew, then configure and build:
+
+    export CPPFLAGS="-I$(brew --prefix)/include"
+    export LDFLAGS="-L$(brew --prefix)/lib"
+    meson setup build \
+        -Dvideo=false \
+        -Dpython=no \
+        -Dgtk=no \
+        -Dgir=false \
+        -Dqt=false \
+        -Djava=disabled \
+        -Ddoc=false \
+        -Dimagemagick=enabled
+    meson compile -C build
+    meson test -C build --no-suite display --no-suite regression \
+        --print-errorlogs
+
+This runs the decoder, image conversion, and image scanning tests. The display
+and long decoder regression suites are skipped. To install, use:
+
+    meson install -C build
